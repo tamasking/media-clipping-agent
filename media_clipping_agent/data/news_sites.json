@@ -1,0 +1,88 @@
+{
+  "news_sites": [
+    {
+      "name": "BBC News",
+      "url": "https://www.bbc.com/news",
+      "type": "news",
+      "enabled": true
+    },
+    {
+      "name": "CNN",
+      "url": "https://www.cnn.com",
+      "type": "news",
+      "enabled": true
+    },
+    {
+      "name": "Reuters",
+      "url": "https://www.reuters.com",
+      "type": "news",
+      "enabled": true
+    },
+    {
+      "name": "Associated Press",
+      "url": "https://apnews.com",
+      "type": "news",
+      "enabled": true
+    },
+    {
+      "name": "The Guardian",
+      "url": "https://www.theguardian.com",
+      "type": "news",
+      "enabled": true
+    },
+    {
+      "name": "Washington Post",
+      "url": "https://www.washingtonpost.com",
+      "type": "news",
+      "enabled": true
+    },
+    {
+      "name": "New York Times",
+      "url": "https://www.nytimes.com",
+      "type": "news",
+      "enabled": true
+    },
+    {
+      "name": "TechCrunch",
+      "url": "https://techcrunch.com",
+      "type": "tech",
+      "enabled": true
+    },
+    {
+      "name": "The Verge",
+      "url": "https://www.theverge.com",
+      "type": "tech",
+      "enabled": true
+    },
+    {
+      "name": "Forbes",
+      "url": "https://www.forbes.com",
+      "type": "business",
+      "enabled": true
+    }
+  ],
+  "social_platforms": [
+    {
+      "name": "LinkedIn",
+      "url": "https://www.linkedin.com",
+      "type": "social",
+      "enabled": true,
+      "search_url": "https://www.linkedin.com/search/results/content/?keywords="
+    },
+    {
+      "name": "Facebook",
+      "url": "https://www.facebook.com",
+      "type": "social",
+      "enabled": true,
+      "search_url": "https://www.facebook.com/search/posts/?q="
+    },
+    {
+      "name": "Instagram",
+      "url": "https://www.instagram.com",
+      "type": "social",
+      "enabled": true,
+      "search_url": "https://www.instagram.com/explore/tags/"
+    }
+  ],
+  "custom_sites": []
+}
