@@ -1,21 +1,41 @@
-import asyncio
-import json
-import secrets
-from typing import List, Optional
-from datetime import datetime
+"""
+AgentDash Backend - Real-time AI Agent Monitoring Dashboard
+With OpenSaw Integration
+"""
 from contextlib import asynccontextmanager
+from datetime import datetime
+from typing import List, Optional, Dict, Any
+import json
+import random
+import asyncio
+import hashlib
+import hmac
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc, func
 from pydantic import BaseModel
 
-from database import init_db, async_session, engine
-from models import Task, TaskStatus, Priority, TaskType, Metric, Activity, Deliverable
+from database import init_db, get_session, AsyncSessionLocal
+from models import Task, Activity, Deliverable, Metric
+from opensaw_integration import (
+    OpenSawFinding, OpenSawTask, OpenSawWebhookPayload,
+    OpenSawSeverity
+)
 
-# API Key storage (in production, use secure storage)
-API_KEY = "ak_" + secrets.token_hex(32)
+# Configuration storage for OpenSaw
+OPENSALAW_CONFIG: Dict[str, Any] = {
+    "enabled": False,
+    "endpoint_ip": None,
+    "webhook_token": None,
+    "auto_create_tasks": True,
+    "severity_mapping": {
+        "critical": "high",
+        "high": "medium", 
+        "medium": "medium",
+        "low": "low",
+        "info": "low"
+    }
+}
 
 # WebSocket connection manager
 class ConnectionManager:
@@ -27,8 +47,7 @@ class ConnectionManager:
         self.active_connections.append(websocket)
 
     def disconnect(self, websocket: WebSocket):
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
+        self.active_connections.remove(websocket)
 
     async def broadcast(self, message: dict):
         disconnected = []
@@ -37,48 +56,119 @@ class ConnectionManager:
                 await connection.send_json(message)
             except:
                 disconnected.append(connection)
-
         for conn in disconnected:
-            self.disconnect(conn)
+            self.active_connections.remove(conn)
 
 manager = ConnectionManager()
 
-# Pydantic models
-class TaskCreate(BaseModel):
-    title: str
-    description: Optional[str] = ""
-    status: TaskStatus = TaskStatus.BACKLOG
-    priority: Priority = Priority.MEDIUM
-    task_type: TaskType = TaskType.CUSTOM
-    is_recurring: int = 0
+# Mock data for demo
+mock_tasks = [
+    {
+        "id": "task-001",
+        "title": "Social Media Campaign",
+        "description": "Launch Q1 product awareness campaign",
+        "status": "in-progress",
+        "priority": "high",
+        "type": "marketing",
+        "assignee": "Sarah Chen",
+        "created_at": "2026-02-01T10:00:00",
+        "deadline": "2026-02-15T23:59:59"
+    },
+    {
+        "id": "task-002", 
+        "title": "News Article Coverage",
+        "description": "Track PR mentions in tech publications",
+        "status": "pending",
+        "priority": "medium",
+        "type": "pr",
+        "assignee": "Mike Ross",
+        "created_at": "2026-02-02T14:30:00",
+        "deadline": "2026-02-10T18:00:00"
+    },
+    {
+        "id": "task-003",
+        "title": "Influencer Outreach",
+        "description": "Contact top 10 industry influencers",
+        "status": "completed",
+        "priority": "high",
+        "type": "marketing",
+        "assignee": "Emma Wilson",
+        "created_at": "2026-02-01T09:00:00",
+        "completed_at": "2026-02-03T16:45:00"
+    },
+    {
+        "id": "task-004",
+        "title": "Competitor Analysis",
+        "description": "Analyze competitor media mentions",
+        "status": "in-progress",
+        "priority": "low",
+        "type": "research",
+        "assignee": "Alex Kumar",
+        "created_at": "2026-02-02T11:00:00",
+        "deadline": "2026-02-20T17:00:00"
+    },
+    {
+        "id": "task-005",
+        "title": "Crisis Response Plan",
+        "description": "Draft response templates for potential issues",
+        "status": "blocked",
+        "priority": "high",
+        "type": "pr",
+        "assignee": "Sarah Chen",
+        "created_at": "2026-02-03T08:00:00",
+        "deadline": "2026-02-05T12:00:00"
+    }
+]
 
-class TaskUpdate(BaseModel):
-    title: Optional[str] = None
-    description: Optional[str] = None
-    status: Optional[TaskStatus] = None
-    priority: Optional[Priority] = None
-    task_type: Optional[TaskType] = None
-    is_recurring: Optional[int] = None
+mock_metrics = {
+    "total_requests": 15420,
+    "success_rate": 98.5,
+    "avg_latency": 45,
+    "active_agents": 12
+}
 
-class MetricUpdate(BaseModel):
-    total_requests: Optional[int] = None
-    success_rate: Optional[float] = None
-    avg_latency: Optional[float] = None
-    active_agents: Optional[int] = None
+mock_activities = [
+    {"id": 1, "type": "task", "message": "New task created: Social Media Campaign", "timestamp": "2026-02-04T11:30:00", "agent": "System"},
+    {"id": 2, "type": "alert", "message": "High priority task approaching deadline", "timestamp": "2026-02-04T11:15:00", "agent": "System"},
+    {"id": 3, "type": "update", "message": "Task "News Coverage" moved to in-progress", "timestamp": "2026-02-04T10:45:00", "agent": "Sarah Chen"},
+    {"id": 4, "type": "complete", "message": "Influencer outreach completed successfully", "timestamp": "2026-02-04T09:20:00", "agent": "Emma Wilson"},
+    {"id": 5, "type": "api", "message": "API key regenerated for production", "timestamp": "2026-02-04T08:00:00", "agent": "Admin"},
+]
 
-class ActivityCreate(BaseModel):
-    type: str
-    message: str
-    agent_name: Optional[str] = None
+mock_deliverables = [
+    {"id": 1, "name": "Q1 Campaign Report.pdf", "type": "pdf", "size": "2.4 MB", "created": "2026-02-03"},
+    {"id": 2, "name": "Media Coverage Analysis.xlsx", "type": "xlsx", "size": "856 KB", "created": "2026-02-02"},
+    {"id": 3, "name": "Influencer Contact List.csv", "type": "csv", "size": "124 KB", "created": "2026-02-01"},
+]
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Application lifespan handler"""
     await init_db()
+
+    # Start background metrics simulation
+    asyncio.create_task(simulate_metrics())
+
     yield
+
+    # Cleanup
+    pass
+
+async def simulate_metrics():
+    """Simulate real-time metrics updates"""
+    while True:
+        await asyncio.sleep(5)
+        mock_metrics["total_requests"] += random.randint(10, 50)
+        mock_metrics["avg_latency"] = max(20, min(100, mock_metrics["avg_latency"] + random.randint(-5, 5)))
+        mock_metrics["success_rate"] = round(max(95, min(99.9, mock_metrics["success_rate"] + random.uniform(-0.2, 0.2))), 1)
+
+        await manager.broadcast({
+            "type": "metrics_update",
+            "data": mock_metrics
+        })
 
 app = FastAPI(title="AgentDash API", lifespan=lifespan)
 
-# CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -87,261 +177,195 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# WebSocket endpoint
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
-            data = await websocket.receive_text()
-            # Echo back for now, can be extended for bidirectional commands
-            await websocket.send_json({"type": "echo", "data": data})
+            data = await websocket.receive_json()
+            # Handle incoming messages
+            if data.get("type") == "ping":
+                await websocket.send_json({"type": "pong"})
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
-# API Key endpoints
-@app.get("/api/key")
-async def get_api_key():
-    return {"api_key": API_KEY}
-
-@app.post("/api/key/regenerate")
-async def regenerate_api_key():
-    global API_KEY
-    API_KEY = "ak_" + secrets.token_hex(32)
-    return {"api_key": API_KEY}
-
-# Metrics endpoints
-@app.get("/api/metrics")
-async def get_metrics():
-    async with async_session() as session:
-        result = await session.execute(select(Metric).order_by(desc(Metric.id)).limit(1))
-        metric = result.scalar_one_or_none()
-        if not metric:
-            return {
-                "total_requests": 0,
-                "success_rate": 0.0,
-                "avg_latency": 0.0,
-                "active_agents": 0
-            }
-        return {
-            "total_requests": metric.total_requests,
-            "success_rate": metric.success_rate,
-            "avg_latency": metric.avg_latency,
-            "active_agents": metric.active_agents
-        }
-
-@app.post("/api/metrics")
-async def update_metrics(metric_update: MetricUpdate):
-    async with async_session() as session:
-        result = await session.execute(select(Metric).order_by(desc(Metric.id)).limit(1))
-        metric = result.scalar_one_or_none()
-
-        if not metric:
-            metric = Metric()
-            session.add(metric)
-
-        if metric_update.total_requests is not None:
-            metric.total_requests = metric_update.total_requests
-        if metric_update.success_rate is not None:
-            metric.success_rate = metric_update.success_rate
-        if metric_update.avg_latency is not None:
-            metric.avg_latency = metric_update.avg_latency
-        if metric_update.active_agents is not None:
-            metric.active_agents = metric_update.active_agents
-
-        await session.commit()
-
-        # Broadcast update
-        await manager.broadcast({
-            "type": "metrics_update",
-            "data": {
-                "total_requests": metric.total_requests,
-                "success_rate": metric.success_rate,
-                "avg_latency": metric.avg_latency,
-                "active_agents": metric.active_agents
-            }
-        })
-
-        return {"status": "updated"}
-
-# Task endpoints
 @app.get("/api/tasks")
 async def get_tasks():
-    async with async_session() as session:
-        result = await session.execute(select(Task).order_by(desc(Task.created_at)))
-        tasks = result.scalars().all()
-        return [
-            {
-                "id": t.id,
-                "title": t.title,
-                "description": t.description,
-                "status": t.status.value,
-                "priority": t.priority.value,
-                "task_type": t.task_type.value,
-                "is_recurring": t.is_recurring,
-                "created_at": t.created_at.isoformat() if t.created_at else None
-            }
-            for t in tasks
-        ]
+    """Get all tasks"""
+    return {"tasks": mock_tasks}
 
-@app.post("/api/tasks")
-async def create_task(task: TaskCreate):
-    async with async_session() as session:
-        db_task = Task(
-            title=task.title,
-            description=task.description,
-            status=task.status,
-            priority=task.priority,
-            task_type=task.task_type,
-            is_recurring=task.is_recurring
-        )
-        session.add(db_task)
-        await session.commit()
-        await session.refresh(db_task)
+@app.get("/api/metrics")
+async def get_metrics():
+    """Get current metrics"""
+    return mock_metrics
+
+@app.get("/api/activities")
+async def get_activities():
+    """Get recent activities"""
+    return {"activities": mock_activities}
+
+@app.get("/api/deliverables")
+async def get_deliverables():
+    """Get completed deliverables"""
+    return {"deliverables": mock_deliverables}
+
+# OpenSaw Integration Endpoints
+
+class OpenSawConfig(BaseModel):
+    enabled: bool
+    endpoint_ip: Optional[str] = None
+    webhook_token: Optional[str] = None
+    auto_create_tasks: bool = True
+
+@app.get("/api/opensaw/config")
+async def get_opensaw_config():
+    """Get OpenSaw integration configuration"""
+    return OPENSALAW_CONFIG
+
+@app.post("/api/opensaw/config")
+async def update_opensaw_config(config: OpenSawConfig):
+    """Update OpenSaw integration configuration"""
+    OPENSALAW_CONFIG["enabled"] = config.enabled
+    OPENSALAW_CONFIG["endpoint_ip"] = config.endpoint_ip
+    OPENSALAW_CONFIG["webhook_token"] = config.webhook_token
+    OPENSALAW_CONFIG["auto_create_tasks"] = config.auto_create_tasks
+
+    # Broadcast config update
+    await manager.broadcast({
+        "type": "opensaw_config_update",
+        "data": OPENSALAW_CONFIG
+    })
+
+    return {"status": "success", "config": OPENSALAW_CONFIG}
+
+@app.get("/api/opensaw/status")
+async def get_opensaw_status():
+    """Check OpenSaw connection status"""
+    return {
+        "connected": OPENSALAW_CONFIG["enabled"] and OPENSALAW_CONFIG["endpoint_ip"] is not None,
+        "last_ping": None,  # Would track actual last communication
+        "config": OPENSALAW_CONFIG
+    }
+
+@app.post("/api/opensaw/webhook")
+async def opensaw_webhook(
+    payload: OpenSawWebhookPayload,
+    request: Request,
+    x_opensaw_signature: Optional[str] = Header(None)
+):
+    """
+    Receive webhook from OpenSaw instance
+
+    OpenSaw sends:
+    - task.created: New scan/task started
+    - task.updated: Scan progress update
+    - task.completed: Scan finished
+    - finding.discovered: New vulnerability/finding found
+    """
+
+    # Verify webhook token if configured
+    if OPENSALAW_CONFIG["webhook_token"]:
+        if payload.webhook_token != OPENSALAW_CONFIG["webhook_token"]:
+            raise HTTPException(status_code=401, detail="Invalid webhook token")
+
+    event_type = payload.event_type
+    data = payload.data
+
+    # Process different event types
+    if event_type == "task.created" and OPENSALAW_CONFIG["auto_create_tasks"]:
+        task_data = OpenSawTask(**data)
+        new_task = {
+            "id": f"opensaw-{task_data.id}",
+            "title": f"🔍 {task_data.name}",
+            "description": f"OpenSaw scan: {task_data.scan_type or 'Security Scan'}\nTarget: {task_data.target_ip or 'N/A'}",
+            "status": "pending" if task_data.status == "pending" else "in-progress",
+            "priority": "high",
+            "type": "security",
+            "assignee": "OpenSaw Agent",
+            "created_at": task_data.created_at.isoformat(),
+            "source": "opensaw"
+        }
+        mock_tasks.append(new_task)
+
+        # Add activity
+        activity = {
+            "id": len(mock_activities) + 1,
+            "type": "opensaw",
+            "message": f"OpenSaw task created: {task_data.name}",
+            "timestamp": datetime.utcnow().isoformat(),
+            "agent": "OpenSaw"
+        }
+        mock_activities.insert(0, activity)
 
         await manager.broadcast({
             "type": "task_created",
-            "data": {
-                "id": db_task.id,
-                "title": db_task.title,
-                "status": db_task.status.value
-            }
+            "data": new_task
         })
 
-        return {"id": db_task.id, "status": "created"}
+        return {"status": "success", "action": "task_created"}
 
-@app.put("/api/tasks/{task_id}")
-async def update_task(task_id: int, task_update: TaskUpdate):
-    async with async_session() as session:
-        result = await session.execute(select(Task).where(Task.id == task_id))
-        task = result.scalar_one_or_none()
+    elif event_type == "finding.discovered":
+        finding = OpenSawFinding(**data)
 
-        if not task:
-            raise HTTPException(status_code=404, detail="Task not found")
+        # Map severity to priority
+        priority = OPENSALAW_CONFIG["severity_mapping"].get(finding.severity.value, "low")
 
-        if task_update.title is not None:
-            task.title = task_update.title
-        if task_update.description is not None:
-            task.description = task_update.description
-        if task_update.status is not None:
-            task.status = task_update.status
-        if task_update.priority is not None:
-            task.priority = task_update.priority
-        if task_update.task_type is not None:
-            task.task_type = task_update.task_type
-        if task_update.is_recurring is not None:
-            task.is_recurring = task_update.is_recurring
+        new_task = {
+            "id": f"finding-{finding.id}",
+            "title": f"🚨 {finding.title}",
+            "description": f"{finding.description or 'Security finding'}\n\nTarget: {finding.target}:{finding.port}\nService: {finding.service or 'Unknown'}",
+            "status": "pending",
+            "priority": priority,
+            "type": "vulnerability",
+            "assignee": "Security Team",
+            "created_at": finding.timestamp.isoformat(),
+            "source": "opensaw",
+            "severity": finding.severity.value
+        }
+        mock_tasks.append(new_task)
 
-        await session.commit()
+        # Add critical activity for high severity
+        if finding.severity in [OpenSawSeverity.CRITICAL, OpenSawSeverity.HIGH]:
+            activity = {
+                "id": len(mock_activities) + 1,
+                "type": "alert",
+                "message": f"🚨 CRITICAL: {finding.title} on {finding.target}",
+                "timestamp": datetime.utcnow().isoformat(),
+                "agent": "OpenSaw"
+            }
+            mock_activities.insert(0, activity)
 
         await manager.broadcast({
-            "type": "task_updated",
-            "data": {
-                "id": task.id,
-                "status": task.status.value
-            }
+            "type": "finding_discovered",
+            "data": new_task
         })
 
-        return {"status": "updated"}
+        return {"status": "success", "action": "finding_logged"}
 
-@app.delete("/api/tasks/{task_id}")
-async def delete_task(task_id: int):
-    async with async_session() as session:
-        result = await session.execute(select(Task).where(Task.id == task_id))
-        task = result.scalar_one_or_none()
+    elif event_type == "task.completed":
+        task_data = OpenSawTask(**data)
 
-        if not task:
-            raise HTTPException(status_code=404, detail="Task not found")
+        # Update existing task
+        for task in mock_tasks:
+            if task["id"] == f"opensaw-{task_data.id}":
+                task["status"] = "completed"
+                task["completed_at"] = task_data.completed_at.isoformat() if task_data.completed_at else datetime.utcnow().isoformat()
 
-        await session.delete(task)
-        await session.commit()
+                await manager.broadcast({
+                    "type": "task_completed",
+                    "data": task
+                })
+                break
 
-        await manager.broadcast({
-            "type": "task_deleted",
-            "data": {"id": task_id}
-        })
+        return {"status": "success", "action": "task_completed"}
 
-        return {"status": "deleted"}
+    return {"status": "success", "action": "received"}
 
-# Activity endpoints
-@app.get("/api/activities")
-async def get_activities(limit: int = 20):
-    async with async_session() as session:
-        result = await session.execute(
-            select(Activity).order_by(desc(Activity.created_at)).limit(limit)
-        )
-        activities = result.scalars().all()
-        return [
-            {
-                "id": a.id,
-                "type": a.type,
-                "message": a.message,
-                "agent_name": a.agent_name,
-                "created_at": a.created_at.isoformat() if a.created_at else None
-            }
-            for a in activities
-        ]
-
-@app.post("/api/activities")
-async def create_activity(activity: ActivityCreate):
-    async with async_session() as session:
-        db_activity = Activity(
-            type=activity.type,
-            message=activity.message,
-            agent_name=activity.agent_name
-        )
-        session.add(db_activity)
-        await session.commit()
-        await session.refresh(db_activity)
-
-        await manager.broadcast({
-            "type": "activity_created",
-            "data": {
-                "id": db_activity.id,
-                "type": db_activity.type,
-                "message": db_activity.message
-            }
-        })
-
-        return {"id": db_activity.id, "status": "created"}
-
-# Deliverables endpoints
-@app.get("/api/deliverables")
-async def get_deliverables():
-    async with async_session() as session:
-        result = await session.execute(select(Deliverable).order_by(desc(Deliverable.created_at)))
-        deliverables = result.scalars().all()
-        return [
-            {
-                "id": d.id,
-                "title": d.title,
-                "description": d.description,
-                "file_path": d.file_path,
-                "created_at": d.created_at.isoformat() if d.created_at else None
-            }
-            for d in deliverables
-        ]
-
-# Ingest endpoint for agents
-@app.post("/api/ingest")
-async def ingest_data(data: dict):
-    """Receive data from external agents"""
-    async with async_session() as session:
-        # Log activity
-        activity = Activity(
-            type=data.get("type", "info"),
-            message=data.get("message", "Data ingested"),
-            agent_name=data.get("agent_name", "Unknown")
-        )
-        session.add(activity)
-        await session.commit()
-
-        await manager.broadcast({
-            "type": "ingest_received",
-            "data": data
-        })
-
-        return {"status": "received"}
+@app.get("/api/opensaw/tasks")
+async def get_opensaw_tasks():
+    """Get all tasks created by OpenSaw"""
+    opensaw_tasks = [t for t in mock_tasks if t.get("source") == "opensaw"]
+    return {"tasks": opensaw_tasks}
 
 if __name__ == "__main__":
     import uvicorn
