@@ -1,0 +1,48 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+}
+
+@layer utilities {
+  .glass {
+    background: rgba(37, 32, 54, 0.6);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+  }
+
+  .neon-green {
+    text-shadow: 0 0 10px #22c55e, 0 0 20px #22c55e;
+  }
+
+  .neon-cyan {
+    text-shadow: 0 0 10px #06b6d4, 0 0 20px #06b6d4;
+  }
+
+  .neon-purple {
+    text-shadow: 0 0 10px #a855f7, 0 0 20px #a855f7;
+  }
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #1a1625;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #2f2a42;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #3f3a52;
+}
